@@ -5,6 +5,36 @@ import prisma from "../config/db";
 
 const JWT_SECRET = process.env.JWT_SECRET || "super-secret-jwt-key-change-this-in-production";
 
+const SANDBOX_PROFILES: Record<string, any> = {
+  "superadmin@infotattva.com": {
+    id: "user-superadmin-id",
+    name: "Infotattva Super Admin",
+    email: "superadmin@infotattva.com",
+    role: "super-admin",
+    status: "active",
+  },
+  "pradeep@infotattva.com": {
+    id: "user-pradeep-id",
+    name: "Pradeep Patra",
+    email: "pradeep@infotattva.com",
+    role: "client-admin",
+    status: "active",
+    companyId: "company-infotattva-id",
+    company: { companyName: "Infotattva Business Solutions" },
+    companyName: "Infotattva Business Solutions"
+  },
+  "sales@infotattva.com": {
+    id: "user-amit-id",
+    name: "Amit Sharma",
+    email: "sales@infotattva.com",
+    role: "team",
+    status: "active",
+    companyId: "company-infotattva-id",
+    company: { companyName: "Infotattva Business Solutions" },
+    companyName: "Infotattva Business Solutions"
+  }
+};
+
 export async function login(req: Request, res: Response) {
   const { email, password } = req.body;
   if (!email || !password) {
@@ -12,11 +42,53 @@ export async function login(req: Request, res: Response) {
   }
 
   try {
-    // Check user in database
-    let dbUser = await prisma.user.findUnique({
-      where: { email },
-      include: { company: true }
-    });
+    // Check user in database with safety timeout / offline catch
+    let dbUser: any = null;
+    let dbConnected = true;
+
+    try {
+      dbUser = await Promise.race([
+        prisma.user.findUnique({
+          where: { email },
+          include: { company: true }
+        }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("DB_TIMEOUT")), 2500))
+      ]);
+    } catch (dbErr: any) {
+      console.warn("[Auth] Database unavailable or timed out:", dbErr.message);
+      dbConnected = false;
+    }
+
+    // Offline / Sandbox Fallback
+    if (!dbConnected) {
+      const sandboxUser = SANDBOX_PROFILES[email];
+      if (sandboxUser && password === "securepassword") {
+        const token = jwt.sign(
+          {
+            id: sandboxUser.id,
+            email: sandboxUser.email,
+            role: sandboxUser.role,
+            companyId: sandboxUser.companyId
+          },
+          JWT_SECRET,
+          { expiresIn: "24h" }
+        );
+
+        return res.status(200).json({
+          token,
+          user: {
+            id: sandboxUser.id,
+            name: sandboxUser.name,
+            email: sandboxUser.email,
+            role: sandboxUser.role,
+            companyId: sandboxUser.companyId,
+            companyName: sandboxUser.companyName
+          }
+        });
+      } else {
+        return res.status(401).json({ error: "Invalid email or password (or database connection offline)" });
+      }
+    }
 
     // Dev Fallback / Auto-seeding: If database is empty and logging in with predefined credentials, auto-create them
     if (!dbUser && (email === "pradeep@infotattva.com" || email === "superadmin@infotattva.com" || email === "sales@infotattva.com")) {
